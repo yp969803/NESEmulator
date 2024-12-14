@@ -2,7 +2,11 @@
 
 Bus::Bus(/* args */)
 {
+    // Clear RAM contents
     for(auto &i : ram) i = 0x00;
+
+    // Connect CPU to communication bus
+    cpu.ConnectBus(this);
 }
 
 Bus::~Bus()
