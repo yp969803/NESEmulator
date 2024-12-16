@@ -2,6 +2,12 @@
 #include <string>
 #include <vector>
 #include<map>
+
+#pragma once
+#ifdef LOGMODE
+#include <stdio.h>
+#endif
+
 class Bus;
 class olc6502
 {
@@ -108,14 +114,7 @@ private:
 	// functionally identical to a NOP
 	uint8_t XXX();
 
-    void clock();
-    void reset();
-    void irq();
-    void nmi();
-	// Indicates the current instruction has completed by returning true. This is
-	// a utility function to enable "step-by-step" execution, without manually 
-	// clocking every cycle
-	bool complete();
+
 
     uint8_t fetch();
     uint8_t fetched = 0x00;
@@ -124,6 +123,16 @@ private:
     uint16_t addr_rel = 0x0000;
     uint8_t opcode = 0x00;
     uint8_t cycles = 0;
+
+public:
+    void clock();
+    void reset();
+    void irq();
+    void nmi();
+	// Indicates the current instruction has completed by returning true. This is
+	// a utility function to enable "step-by-step" execution, without manually 
+	// clocking every cycle
+	bool complete();
 
 private:
     // Conveinece functions to access status register
