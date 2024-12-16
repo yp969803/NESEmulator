@@ -112,6 +112,10 @@ private:
     void reset();
     void irq();
     void nmi();
+	// Indicates the current instruction has completed by returning true. This is
+	// a utility function to enable "step-by-step" execution, without manually 
+	// clocking every cycle
+	bool complete();
 
     uint8_t fetch();
     uint8_t fetched = 0x00;
