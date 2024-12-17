@@ -1,7 +1,7 @@
 #include "olc6502.h"
 #include "Bus.h"
 
-olc6502::olc6502(/* args */)
+olc6502::olc6502()
 {
 	using a= olc6502;
 	lookup = 
@@ -58,7 +58,6 @@ void olc6502::clock(){
 		uint8_t additional_cycle1 = (this->*lookup[opcode].addrmode)();
 		uint8_t additional_cycle2 = (this->*lookup[opcode].operate)();
 		cycles += (additional_cycle1 & additional_cycle2);      
-  
 	}
 
 	cycles--;

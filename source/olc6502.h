@@ -5,7 +5,6 @@
 
 #pragma once
 #ifdef LOGMODE
-#include <stdio.h>
 #endif
 
 class Bus;
