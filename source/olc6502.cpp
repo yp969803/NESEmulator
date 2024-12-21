@@ -36,13 +36,13 @@ uint8_t olc6502::read(uint16_t a)
 	// is intentional under normal circumstances. However the disassembler will
 	// want to read the data at an address without changing the state of the
 	// devices on the bus
-	return bus->read(a, false);
+	return bus->cpuRead(a, false);
 }
 
 // Writes a byte to the bus at the specified address
 void olc6502::write(uint16_t a, uint8_t d)
 {
-	bus->write(a, d);
+	bus->cpuWrite(a, d);
 }
 
 
