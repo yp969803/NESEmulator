@@ -39,3 +39,20 @@ uint8_t Bus::cpuRead(uint16_t addr, bool bReadOnly)
     return data;
 
 }
+
+void Bus:: reset()
+{
+   cpu.reset();
+   nSystemClockCounter = 0;
+}
+
+void Bus::clock()
+{
+
+}
+
+void Bus::insertCartridge(const std::shared_ptr<Cartridge>& cartridge)
+{
+    this->cart = cartridge;
+    ppu.ConnectCartridge(cartridge);
+}
