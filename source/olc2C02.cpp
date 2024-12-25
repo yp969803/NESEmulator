@@ -66,12 +66,23 @@ void olc2C02::cpuWrite(uint16_t addr, uint8_t data){
 }
 
 uint8_t olc2C02:: ppuRead(uint16_t addr, bool rdonly){
+    
     uint8_t data = 0x00;
+
+    if(cart->ppuRead(addr, rdonly))
+    {
+
+    }
+
     addr &= 0x3FFF;
     return data;
 }
 
 void olc2C02::ppuWrite(uint16_t addr, uint8_t data){
+    if(cart->ppuWrite(addr, data))
+    {
+        
+    }
     addr &= 0x3FFF;
 }
 
