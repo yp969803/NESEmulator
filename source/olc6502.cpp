@@ -1,9 +1,23 @@
+
+
 #include "olc6502.h"
 #include "Bus.h"
 
+// Constructor
 olc6502::olc6502()
 {
-	using a= olc6502;
+	// Assembles the translation table. It's big, it's ugly, but it yields a convenient way
+	// to emulate the 6502. I'm certain there are some "code-golf" strategies to reduce this
+	// but I've deliberately kept it verbose for study and alteration
+	
+	// It is 16x16 entries. This gives 256 instructions. It is arranged to that the bottom
+	// 4 bits of the instruction choose the column, and the top 4 bits choose the row.
+
+	// For convenience to get function pointers to members of this class, I'm using this
+	// or else it will be much much larger :D
+
+	// The table is one big initialiser list of initialiser lists...
+	using a = olc6502;
 	lookup = 
 	{
 		{ "BRK", &a::BRK, &a::IMM, 7 },{ "ORA", &a::ORA, &a::IZX, 6 },{ "???", &a::XXX, &a::IMP, 2 },{ "???", &a::XXX, &a::IMP, 8 },{ "???", &a::NOP, &a::IMP, 3 },{ "ORA", &a::ORA, &a::ZP0, 3 },{ "ASL", &a::ASL, &a::ZP0, 5 },{ "???", &a::XXX, &a::IMP, 5 },{ "PHP", &a::PHP, &a::IMP, 3 },{ "ORA", &a::ORA, &a::IMM, 2 },{ "ASL", &a::ASL, &a::IMP, 2 },{ "???", &a::XXX, &a::IMP, 2 },{ "???", &a::NOP, &a::IMP, 4 },{ "ORA", &a::ORA, &a::ABS, 4 },{ "ASL", &a::ASL, &a::ABS, 6 },{ "???", &a::XXX, &a::IMP, 6 },
@@ -27,8 +41,17 @@ olc6502::olc6502()
 
 olc6502::~olc6502()
 {
+	// Destructor - has nothing to do
 }
 
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+// BUS CONNECTIVITY
+
+// Reads an 8-bit byte from the bus, located at the specified 16-bit address
 uint8_t olc6502::read(uint16_t a)
 {
 	// In normal operation "read only" is set to false. This may seem odd. Some
@@ -46,22 +69,191 @@ void olc6502::write(uint16_t a, uint8_t d)
 }
 
 
-void olc6502::clock(){
-	if(cycles==0)
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+// EXTERNAL INPUTS
+
+// Forces the 6502 into a known state. This is hard-wired inside the CPU. The
+// registers are set to 0x00, the status register is cleared except for unused
+// bit which remains at 1. An absolute address is read from location 0xFFFC
+// which contains a second address that the program counter is set to. This 
+// allows the programmer to jump to a known and programmable location in the
+// memory to start executing from. Typically the programmer would set the value
+// at location 0xFFFC at compile time.
+void olc6502::reset()
+{
+	// Get address to set program counter to
+	addr_abs = 0xFFFC;
+	uint16_t lo = read(addr_abs + 0);
+	uint16_t hi = read(addr_abs + 1);
+
+	// Set it
+	pc = (hi << 8) | lo;
+
+	// Reset internal registers
+	a = 0;
+	x = 0;
+	y = 0;
+	stkp = 0xFD;
+	status = 0x00 | U;
+
+	// Clear internal helper variables
+	addr_rel = 0x0000;
+	addr_abs = 0x0000;
+	fetched = 0x00;
+
+	// Reset takes time
+	cycles = 8;
+}
+
+
+// Interrupt requests are a complex operation and only happen if the
+// "disable interrupt" flag is 0. IRQs can happen at any time, but
+// you dont want them to be destructive to the operation of the running 
+// program. Therefore the current instruction is allowed to finish
+// (which I facilitate by doing the whole thing when cycles == 0) and 
+// then the current program counter is stored on the stack. Then the
+// current status register is stored on the stack. When the routine
+// that services the interrupt has finished, the status register
+// and program counter can be restored to how they where before it 
+// occurred. This is impemented by the "RTI" instruction. Once the IRQ
+// has happened, in a similar way to a reset, a programmable address
+// is read form hard coded location 0xFFFE, which is subsequently
+// set to the program counter.
+void olc6502::irq()
+{
+	// If interrupts are allowed
+	if (GetFlag(I) == 0)
 	{
-         opcode=read(pc);
-		 pc++;
+		// Push the program counter to the stack. It's 16-bits dont
+		// forget so that takes two pushes
+		write(0x0100 + stkp, (pc >> 8) & 0x00FF);
+		stkp--;
+		write(0x0100 + stkp, pc & 0x00FF);
+		stkp--;
 
-		//  Get Starting number of cycles
-        cycles = lookup[opcode].cycles;
+		// Then Push the status register to the stack
+		SetFlag(B, 0);
+		SetFlag(U, 1);
+		SetFlag(I, 1);
+		write(0x0100 + stkp, status);
+		stkp--;
 
-		uint8_t additional_cycle1 = (this->*lookup[opcode].addrmode)();
-		uint8_t additional_cycle2 = (this->*lookup[opcode].operate)();
-		cycles += (additional_cycle1 & additional_cycle2);      
+		// Read new program counter location from fixed address
+		addr_abs = 0xFFFE;
+		uint16_t lo = read(addr_abs + 0);
+		uint16_t hi = read(addr_abs + 1);
+		pc = (hi << 8) | lo;
+
+		// IRQs take time
+		cycles = 7;
 	}
+}
 
+
+// A Non-Maskable Interrupt cannot be ignored. It behaves in exactly the
+// same way as a regular IRQ, but reads the new program counter address
+// form location 0xFFFA.
+void olc6502::nmi()
+{
+	write(0x0100 + stkp, (pc >> 8) & 0x00FF);
+	stkp--;
+	write(0x0100 + stkp, pc & 0x00FF);
+	stkp--;
+
+	SetFlag(B, 0);
+	SetFlag(U, 1);
+	SetFlag(I, 1);
+	write(0x0100 + stkp, status);
+	stkp--;
+
+	addr_abs = 0xFFFA;
+	uint16_t lo = read(addr_abs + 0);
+	uint16_t hi = read(addr_abs + 1);
+	pc = (hi << 8) | lo;
+
+	cycles = 8;
+}
+
+// Perform one clock cycles worth of emulation
+void olc6502::clock()
+{
+	// Each instruction requires a variable number of clock cycles to execute.
+	// In my emulation, I only care about the final result and so I perform
+	// the entire computation in one hit. In hardware, each clock cycle would
+	// perform "microcode" style transformations of the CPUs state.
+	//
+	// To remain compliant with connected devices, it's important that the 
+	// emulation also takes "time" in order to execute instructions, so I
+	// implement that delay by simply counting down the cycles required by 
+	// the instruction. When it reaches 0, the instruction is complete, and
+	// the next one is ready to be executed.
+	if (cycles == 0)
+	{
+		// Read next instruction byte. This 8-bit value is used to index
+		// the translation table to get the relevant information about
+		// how to implement the instruction
+		opcode = read(pc);
+
+#ifdef LOGMODE
+		uint16_t log_pc = pc;
+#endif
+		
+		// Always set the unused status flag bit to 1
+		SetFlag(U, true);
+		
+		// Increment program counter, we read the opcode byte
+		pc++;
+
+		// Get Starting number of cycles
+		cycles = lookup[opcode].cycles;
+
+		// Perform fetch of intermmediate data using the
+		// required addressing mode
+		uint8_t additional_cycle1 = (this->*lookup[opcode].addrmode)();
+
+		// Perform operation
+		uint8_t additional_cycle2 = (this->*lookup[opcode].operate)();
+
+		// The addressmode and opcode may have altered the number
+		// of cycles this instruction requires before its completed
+		cycles += (additional_cycle1 & additional_cycle2);
+
+		// Always set the unused status flag bit to 1
+		SetFlag(U, true);
+
+#ifdef LOGMODE
+		// This logger dumps every cycle the entire processor state for analysis.
+		// This can be used for debugging the emulation, but has little utility
+		// during emulation. Its also very slow, so only use if you have to.
+		if (logfile == nullptr)	logfile = fopen("olc6502.txt", "wt");
+		if (logfile != nullptr)
+		{
+			fprintf(logfile, "%10d:%02d PC:%04X %s A:%02X X:%02X Y:%02X %s%s%s%s%s%s%s%s STKP:%02X\n",
+				clock_count, 0, log_pc, "XXX", a, x, y,	
+				GetFlag(N) ? "N" : ".",	GetFlag(V) ? "V" : ".",	GetFlag(U) ? "U" : ".",	
+				GetFlag(B) ? "B" : ".",	GetFlag(D) ? "D" : ".",	GetFlag(I) ? "I" : ".",	
+				GetFlag(Z) ? "Z" : ".",	GetFlag(C) ? "C" : ".",	stkp);
+		}
+#endif
+	}
+	
+	// Increment global clock count - This is actually unused unless logging is enabled
+	// but I've kept it in because its a handy watch variable for debugging
+	clock_count++;
+
+	// Decrement the number of cycles remaining for this instruction
 	cycles--;
 }
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+// FLAG FUNCTIONS
 
 // Returns the value of a specific bit of the status register
 uint8_t olc6502::GetFlag(FLAGS6502 f)
@@ -69,16 +261,18 @@ uint8_t olc6502::GetFlag(FLAGS6502 f)
 	return ((status & f) > 0) ? 1 : 0;
 }
 
-
-
-void olc6502::SetFlag(FLAGS6502 f, bool v){
-	if(v){
+// Sets or clears a specific bit of the status register
+void olc6502::SetFlag(FLAGS6502 f, bool v)
+{
+	if (v)
 		status |= f;
-	}
-	else{
+	else
 		status &= ~f;
-	}
 }
+
+
+
+
 
 ///////////////////////////////////////////////////////////////////////////////
 // ADDRESSING MODES
@@ -296,16 +490,29 @@ uint8_t olc6502::IZY()
 		return 0;
 }
 
-uint8_t olc6502::fetch(){
-	if(!(lookup[opcode].addrmode == &olc6502::IMP)){
+
+
+// This function sources the data used by the instruction into 
+// a convenient numeric variable. Some instructions dont have to 
+// fetch data as the source is implied by the instruction. For example
+// "INX" increments the X register. There is no additional data
+// required. For all other addressing modes, the data resides at 
+// the location held within addr_abs, so it is read from there. 
+// Immediate adress mode exploits this slightly, as that has
+// set addr_abs = pc + 1, so it fetches the data from the
+// next byte for example "LDA $FF" just loads the accumulator with
+// 256, i.e. no far reaching memory fetch is required. "fetched"
+// is a variable global to the CPU, and is set by calling this 
+// function. It also returns it for convenience.
+uint8_t olc6502::fetch()
+{
+	if (!(lookup[opcode].addrmode == &olc6502::IMP))
 		fetched = read(addr_abs);
-	}
 	return fetched;
 }
 
 
 
-// Instructions
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -385,7 +592,7 @@ uint8_t olc6502::ADC()
 	
 	// Add is performed in 16-bit domain for emulation to capture any
 	// carry bit, which will exist in bit 8 of the 16-bit word
-	uint16_t temp = (uint16_t)a + (uint16_t)fetched + (uint16_t)GetFlag(C);
+	temp = (uint16_t)a + (uint16_t)fetched + (uint16_t)GetFlag(C);
 	
 	// The carry flag out exists in the high byte bit 0
 	SetFlag(C, temp > 255);
@@ -443,7 +650,7 @@ uint8_t olc6502::SBC()
 	uint16_t value = ((uint16_t)fetched) ^ 0x00FF;
 	
 	// Notice this is exactly the same as addition from here!
-	uint16_t temp = (uint16_t)a + value + (uint16_t)GetFlag(C);
+	temp = (uint16_t)a + value + (uint16_t)GetFlag(C);
 	SetFlag(C, temp & 0xFF00);
 	SetFlag(Z, ((temp & 0x00FF) == 0));
 	SetFlag(V, (temp ^ (uint16_t)a) & (temp ^ value) & 0x0080);
@@ -481,7 +688,7 @@ uint8_t olc6502::AND()
 uint8_t olc6502::ASL()
 {
 	fetch();
-	uint16_t temp = (uint16_t)fetched << 1;
+	temp = (uint16_t)fetched << 1;
 	SetFlag(C, (temp & 0xFF00) > 0);
 	SetFlag(Z, (temp & 0x00FF) == 0x00);
 	SetFlag(N, temp & 0x80);
@@ -549,7 +756,7 @@ uint8_t olc6502::BEQ()
 uint8_t olc6502::BIT()
 {
 	fetch();
-	uint16_t temp = a & fetched;
+	temp = a & fetched;
 	SetFlag(Z, (temp & 0x00FF) == 0x00);
 	SetFlag(N, fetched & (1 << 7));
 	SetFlag(V, fetched & (1 << 6));
@@ -709,7 +916,7 @@ uint8_t olc6502::CLV()
 uint8_t olc6502::CMP()
 {
 	fetch();
-	uint16_t temp = (uint16_t)a - (uint16_t)fetched;
+	temp = (uint16_t)a - (uint16_t)fetched;
 	SetFlag(C, a >= fetched);
 	SetFlag(Z, (temp & 0x00FF) == 0x0000);
 	SetFlag(N, temp & 0x0080);
@@ -723,7 +930,7 @@ uint8_t olc6502::CMP()
 uint8_t olc6502::CPX()
 {
 	fetch();
-	uint16_t temp = (uint16_t)x - (uint16_t)fetched;
+	temp = (uint16_t)x - (uint16_t)fetched;
 	SetFlag(C, x >= fetched);
 	SetFlag(Z, (temp & 0x00FF) == 0x0000);
 	SetFlag(N, temp & 0x0080);
@@ -737,7 +944,7 @@ uint8_t olc6502::CPX()
 uint8_t olc6502::CPY()
 {
 	fetch();
-	uint16_t temp = (uint16_t)y - (uint16_t)fetched;
+	temp = (uint16_t)y - (uint16_t)fetched;
 	SetFlag(C, y >= fetched);
 	SetFlag(Z, (temp & 0x00FF) == 0x0000);
 	SetFlag(N, temp & 0x0080);
@@ -751,7 +958,7 @@ uint8_t olc6502::CPY()
 uint8_t olc6502::DEC()
 {
 	fetch();
-	uint16_t temp = fetched - 1;
+	temp = fetched - 1;
 	write(addr_abs, temp & 0x00FF);
 	SetFlag(Z, (temp & 0x00FF) == 0x0000);
 	SetFlag(N, temp & 0x0080);
@@ -802,7 +1009,7 @@ uint8_t olc6502::EOR()
 uint8_t olc6502::INC()
 {
 	fetch();
-	uint16_t temp = fetched + 1;
+	temp = fetched + 1;
 	write(addr_abs, temp & 0x00FF);
 	SetFlag(Z, (temp & 0x00FF) == 0x0000);
 	SetFlag(N, temp & 0x0080);
@@ -901,7 +1108,7 @@ uint8_t olc6502::LSR()
 {
 	fetch();
 	SetFlag(C, fetched & 0x0001);
-	uint16_t temp = fetched >> 1;	
+	temp = fetched >> 1;	
 	SetFlag(Z, (temp & 0x00FF) == 0x0000);
 	SetFlag(N, temp & 0x0080);
 	if (lookup[opcode].addrmode == &olc6502::IMP)
@@ -913,10 +1120,6 @@ uint8_t olc6502::LSR()
 
 uint8_t olc6502::NOP()
 {
-	// Sadly not all NOPs are equal, Ive added a few here
-	// based on https://wiki.nesdev.com/w/index.php/CPU_unofficial_opcodes
-	// and will add more based on game compatibility, and ultimately
-	// I'd like to cover all illegal opcodes too
 	switch (opcode) {
 	case 0x1C:
 	case 0x3C:
@@ -993,7 +1196,7 @@ uint8_t olc6502::PLP()
 uint8_t olc6502::ROL()
 {
 	fetch();
-	uint16_t temp = (uint16_t)(fetched << 1) | GetFlag(C);
+	temp = (uint16_t)(fetched << 1) | GetFlag(C);
 	SetFlag(C, temp & 0xFF00);
 	SetFlag(Z, (temp & 0x00FF) == 0x0000);
 	SetFlag(N, temp & 0x0080);
@@ -1007,7 +1210,7 @@ uint8_t olc6502::ROL()
 uint8_t olc6502::ROR()
 {
 	fetch();
-	uint16_t temp = (uint16_t)(GetFlag(C) << 7) | (fetched >> 1);
+	temp = (uint16_t)(GetFlag(C) << 7) | (fetched >> 1);
 	SetFlag(C, fetched & 0x01);
 	SetFlag(Z, (temp & 0x00FF) == 0x00);
 	SetFlag(N, temp & 0x0080);
@@ -1175,111 +1378,12 @@ uint8_t olc6502::XXX()
 	return 0;
 }
 
+
+
+
+
 ///////////////////////////////////////////////////////////////////////////////
-// EXTERNAL INPUTS
-
-// Forces the 6502 into a known state. This is hard-wired inside the CPU. The
-// registers are set to 0x00, the status register is cleared except for unused
-// bit which remains at 1. An absolute address is read from location 0xFFFC
-// which contains a second address that the program counter is set to. This 
-// allows the programmer to jump to a known and programmable location in the
-// memory to start executing from. Typically the programmer would set the value
-// at location 0xFFFC at compile time.
-void olc6502::reset()
-{
-	// Get address to set program counter to
-	addr_abs = 0xFFFC;
-	uint16_t lo = read(addr_abs + 0);
-	uint16_t hi = read(addr_abs + 1);
-
-	// Set it
-	pc = (hi << 8) | lo;
-
-	// Reset internal registers
-	a = 0;
-	x = 0;
-	y = 0;
-	stkp = 0xFD;
-	status = 0x00 | U;
-
-	// Clear internal helper variables
-	addr_rel = 0x0000;
-	addr_abs = 0x0000;
-	fetched = 0x00;
-
-	// Reset takes time
-	cycles = 8;
-}
-
-
-// Interrupt requests are a complex operation and only happen if the
-// "disable interrupt" flag is 0. IRQs can happen at any time, but
-// you dont want them to be destructive to the operation of the running 
-// program. Therefore the current instruction is allowed to finish
-// (which I facilitate by doing the whole thing when cycles == 0) and 
-// then the current program counter is stored on the stack. Then the
-// current status register is stored on the stack. When the routine
-// that services the interrupt has finished, the status register
-// and program counter can be restored to how they where before it 
-// occurred. This is impemented by the "RTI" instruction. Once the IRQ
-// has happened, in a similar way to a reset, a programmable address
-// is read form hard coded location 0xFFFE, which is subsequently
-// set to the program counter.
-void olc6502::irq()
-{
-	// If interrupts are allowed
-	if (GetFlag(I) == 0)
-	{
-		// Push the program counter to the stack. It's 16-bits dont
-		// forget so that takes two pushes
-		write(0x0100 + stkp, (pc >> 8) & 0x00FF);
-		stkp--;
-		write(0x0100 + stkp, pc & 0x00FF);
-		stkp--;
-
-		// Then Push the status register to the stack
-		SetFlag(B, 0);
-		SetFlag(U, 1);
-		SetFlag(I, 1);
-		write(0x0100 + stkp, status);
-		stkp--;
-
-		// Read new program counter location from fixed address
-		addr_abs = 0xFFFE;
-		uint16_t lo = read(addr_abs + 0);
-		uint16_t hi = read(addr_abs + 1);
-		pc = (hi << 8) | lo;
-
-		// IRQs take time
-		cycles = 7;
-	}
-}
-
-
-// A Non-Maskable Interrupt cannot be ignored. It behaves in exactly the
-// same way as a regular IRQ, but reads the new program counter address
-// form location 0xFFFA.
-void olc6502::nmi()
-{
-	write(0x0100 + stkp, (pc >> 8) & 0x00FF);
-	stkp--;
-	write(0x0100 + stkp, pc & 0x00FF);
-	stkp--;
-
-	SetFlag(B, 0);
-	SetFlag(U, 1);
-	SetFlag(I, 1);
-	write(0x0100 + stkp, status);
-	stkp--;
-
-	addr_abs = 0xFFFA;
-	uint16_t lo = read(addr_abs + 0);
-	uint16_t hi = read(addr_abs + 1);
-	pc = (hi << 8) | lo;
-
-	cycles = 8;
-}
-
+// HELPER FUNCTIONS
 
 bool olc6502::complete()
 {
@@ -1398,7 +1502,7 @@ std::map<uint16_t, std::string> olc6502::disassemble(uint16_t nStart, uint16_t n
 		else if (lookup[opcode].addrmode == &olc6502::REL)
 		{
 			value = bus->cpuRead(addr, true); addr++;
-			sInst += "$" + hex(value, 2) + " [$" + hex(addr + value, 4) + "] {REL}";
+			sInst += "$" + hex(value, 2) + " [$" + hex(addr + (int8_t)value, 4) + "] {REL}";
 		}
 
 		// Add the formed string to a std::map, using the instruction's
@@ -1410,3 +1514,5 @@ std::map<uint16_t, std::string> olc6502::disassemble(uint16_t nStart, uint16_t n
 
 	return mapLines;
 }
+
+// End of File - Jx9
